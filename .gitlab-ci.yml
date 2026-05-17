@@ -1,0 +1,131 @@
+stages:
+  - build
+  - test
+  - security
+  - docker
+
+variables:
+  MAVEN_OPTS: "-Dmaven.repo.local=$CI_PROJECT_DIR/.m2/repository"
+  DOCKER_DRIVER: overlay2
+
+.java-base: &java-base
+  image: maven:3.9-eclipse-temurin-21
+  cache:
+    key: "maven-$CI_COMMIT_REF_SLUG"
+    paths:
+      - .m2/repository/
+
+# ─── Build ────────────────────────────────────────────────────────────────
+build:product-service:
+  <<: *java-base
+  stage: build
+  script:
+    - cd backend/product-service && mvn clean package -DskipTests -q
+  artifacts:
+    paths:
+      - backend/product-service/target/*.jar
+    expire_in: 1 hour
+
+build:order-service:
+  <<: *java-base
+  stage: build
+  script:
+    - cd backend/order-service && mvn clean package -DskipTests -q
+  artifacts:
+    paths:
+      - backend/order-service/target/*.jar
+    expire_in: 1 hour
+
+build:inventory-service:
+  <<: *java-base
+  stage: build
+  script:
+    - cd backend/inventory-service && mvn clean package -DskipTests -q
+  artifacts:
+    paths:
+      - backend/inventory-service/target/*.jar
+    expire_in: 1 hour
+
+build:frontend:
+  image: node:20-alpine
+  stage: build
+  cache:
+    key: "pnpm-$CI_COMMIT_REF_SLUG"
+    paths:
+      - frontend/node_modules/
+  script:
+    - npm install -g pnpm
+    - cd frontend && pnpm install && pnpm lint && pnpm build
+  artifacts:
+    paths:
+      - frontend/dist/
+    expire_in: 1 hour
+
+# ─── Test ─────────────────────────────────────────────────────────────────
+test:product-service:
+  <<: *java-base
+  stage: test
+  script:
+    - cd backend/product-service && mvn verify
+  coverage: '/Total.*?([0-9]{1,3})%/'
+  artifacts:
+    reports:
+      junit: backend/product-service/target/surefire-reports/*.xml
+      coverage_report:
+        coverage_format: jacoco
+        path: backend/product-service/target/site/jacoco/jacoco.xml
+
+test:order-service:
+  <<: *java-base
+  stage: test
+  script:
+    - cd backend/order-service && mvn verify
+  artifacts:
+    reports:
+      junit: backend/order-service/target/surefire-reports/*.xml
+      coverage_report:
+        coverage_format: jacoco
+        path: backend/order-service/target/site/jacoco/jacoco.xml
+
+test:inventory-service:
+  <<: *java-base
+  stage: test
+  script:
+    - cd backend/inventory-service && mvn verify
+  artifacts:
+    reports:
+      junit: backend/inventory-service/target/surefire-reports/*.xml
+
+# ─── Security ─────────────────────────────────────────────────────────────
+security:semgrep:
+  image: returntocorp/semgrep
+  stage: security
+  script:
+    - semgrep ci --config p/owasp-top-ten --config p/java
+  allow_failure: true
+
+security:trivy:
+  image:
+    name: aquasec/trivy:latest
+    entrypoint: [""]
+  stage: security
+  script:
+    - trivy fs --severity CRITICAL,HIGH --exit-code 1 .
+  allow_failure: true
+
+# ─── Docker ───────────────────────────────────────────────────────────────
+docker:build-all:
+  image: docker:24
+  stage: docker
+  services:
+    - docker:24-dind
+  needs:
+    - build:product-service
+    - build:order-service
+    - build:inventory-service
+    - build:frontend
+  script:
+    - docker compose build
+  only:
+    - main
+    - develop
